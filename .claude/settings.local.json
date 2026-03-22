@@ -7,7 +7,11 @@
       "Bash(rm -rf frontend/.git backend/.git)",
       "Bash(git add:*)",
       "Bash(git rm:*)",
-      "Bash(git commit -m \"Initial commit: CSV 多语言翻译 Agent:*)"
+      "Bash(git commit -m \"Initial commit: CSV 多语言翻译 Agent:*)",
+      "Bash(git remote:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(gh auth:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
