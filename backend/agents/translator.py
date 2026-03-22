@@ -1,6 +1,5 @@
 """翻译 Agent"""
 import aiohttp
-import asyncio
 import json
 from typing import List, Dict
 import sys
@@ -89,34 +88,19 @@ class TranslatorAgent:
             "max_tokens": 4096
         }
 
-        print(f"[Translator] 调用 LLM API: {self.api_url}")
-        print(f"[Translator] 模型: {self.model}")
-        print(f"[Translator] API Key 前缀: {self.api_key[:10]}..." if self.api_key else "[Translator] API Key 未设置!")
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.api_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=180)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        content = result["choices"][0]["message"]["content"]
-                        print(f"[Translator] LLM 响应长度: {len(content)} 字符")
-                        print(f"[Translator] LLM 响应预览: {content[:200]}...")
-                        return content
-                    else:
-                        error_text = await response.text()
-                        print(f"[Translator] LLM API 错误: {response.status} - {error_text}")
-                        raise Exception(f"LLM API 调用失败: {response.status} - {error_text}")
-        except asyncio.TimeoutError:
-            print("[Translator] LLM API 超时 (180秒)")
-            raise Exception("LLM API 调用超时，请稍后重试")
-        except Exception as e:
-            print(f"[Translator] LLM API 异常: {type(e).__name__} - {str(e)}")
-            raise
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                self.api_url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result["choices"][0]["message"]["content"]
+                else:
+                    error_text = await response.text()
+                    raise Exception(f"LLM API 调用失败: {response.status} - {error_text}")
 
     def _parse_translation_response(
         self,
@@ -133,14 +117,7 @@ class TranslatorAgent:
             elif "```" in response:
                 json_match = response.split("```")[1].split("```")[0]
 
-            print(f"[Translator] 解析 JSON, 长度: {len(json_match.strip())}")
             translated_texts = json.loads(json_match.strip())
-
-            # 验证返回数据
-            if not isinstance(translated_texts, list):
-                raise ValueError(f"LLM 返回的不是列表: {type(translated_texts)}")
-
-            print(f"[Translator] 解析成功, 翻译条目数: {len(translated_texts)}")
 
             # 合并翻译结果到原始数据
             result = []
@@ -154,11 +131,13 @@ class TranslatorAgent:
 
             return result
 
-        except (json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
-            # 解析失败，打印详细错误
-            print(f"[Translator] 翻译响应解析失败: {type(e).__name__} - {e}")
-            print(f"[Translator] 响应内容: {response[:500]}...")
-            raise Exception(f"翻译响应解析失败: {e}")
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            # 解析失败，返回原始数据并标记
+            print(f"翻译响应解析失败: {e}")
+            return [
+                {**row, **{f"{col}_translated": row.get(col, "") for col in columns_to_translate}}
+                for row in original_data
+            ]
 
 # 全局实例
 translator_agent = TranslatorAgent()
