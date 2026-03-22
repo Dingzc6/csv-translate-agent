@@ -122,10 +122,8 @@ function Chat({ darkMode }) {
     setProgress({ status: 'processing', progress_percent: 0, total_batches: Math.ceil(stats.total_rows / 20) });
 
     // 发送翻译请求
-    const message = `翻译成${selectedLanguages.map(code => {
-      const map = { en: '英语', ja: '日语', ko: '韩语', fr: '法语', de: '德语', es: '西班牙语', ru: '俄语' };
-      return map[code];
-    }).join('和')}`;
+    const langMap = { en: '英语', ja: '日语', ko: '韩语', fr: '法语', de: '德语', es: '西班牙语', ru: '俄语', pt: '葡萄牙语', it: '意大利语', ar: '阿拉伯语', th: '泰语', vi: '越南语' };
+    const message = `翻译成${selectedLanguages.map(code => langMap[code] || code).join('和')}`;
 
     try {
       await axios.post(`${API_URL}/api/chat`, null, {

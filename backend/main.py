@@ -1,5 +1,6 @@
 """FastAPI 主入口"""
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -13,7 +14,7 @@ import asyncio
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import TEMP_DIR, RESULTS_DIR
+from config import TEMP_DIR, RESULTS_DIR, get_language_name
 from services.csv_parser import parse_csv, detect_chinese_columns
 from services.storage import storage
 from agents.orchestrator import orchestrator
@@ -142,40 +143,64 @@ async def chat(message: str, task_id: str):
     df = task_data[task_id]
     chinese_columns = detect_chinese_columns(df)
 
-    # 解析用户意图
-    user_input = message.lower()
-
-    # 检测目标语言
+    # 解析用户意图 - 提取语言
     languages = []
-    if "英语" in user_input or "英文" in user_input or "en" in user_input:
-        languages.append("en")
-    if "日语" in user_input or "日文" in user_input or "ja" in user_input:
-        languages.append("ja")
-    if "韩语" in user_input or "韩文" in user_input or "ko" in user_input:
-        languages.append("ko")
-    if "法语" in user_input or "法文" in user_input or "fr" in user_input:
-        languages.append("fr")
-    if "德语" in user_input or "德文" in user_input or "de" in user_input:
-        languages.append("de")
-    if "西班牙语" in user_input or "es" in user_input:
-        languages.append("es")
-    if "俄语" in user_input or "俄文" in user_input or "ru" in user_input:
-        languages.append("ru")
+
+    # 预设语言检测（代码和中文名）
+    preset_languages = {
+        "en": ["英语", "英文", "en"],
+        "ja": ["日语", "日文", "ja"],
+        "ko": ["韩语", "韩文", "ko"],
+        "fr": ["法语", "法文", "fr"],
+        "de": ["德语", "德文", "de"],
+        "es": ["西班牙语", "es"],
+        "ru": ["俄语", "俄文", "ru"],
+        "pt": ["葡萄牙语", "pt"],
+        "it": ["意大利语", "it"],
+        "ar": ["阿拉伯语", "ar"],
+        "th": ["泰语", "th"],
+        "vi": ["越南语", "vi"],
+    }
+
+    user_input_lower = message.lower()
+    for code, keywords in preset_languages.items():
+        if any(kw in user_input_lower for kw in keywords):
+            languages.append(code)
+
+    # 如果没有检测到预设语言，尝试从"翻译成XXX"格式中提取
+    if not languages:
+        # 匹配 "翻译成xxx" 或 "翻译为xxx"
+        match = re.search(r'翻译[成为](.+?)(?:和|、|$)', message)
+        if match:
+            lang_text = match.group(1).strip()
+            # 按分隔符拆分多个语言
+            lang_list = re.split(r'[、和,，]', lang_text)
+            for lang in lang_list:
+                lang = lang.strip()
+                if lang:
+                    languages.append(lang)
+
+    # 如果仍然没有语言，尝试提取整个目标语言部分
+    if not languages:
+        match = re.search(r'翻译[成为](.+)$', message)
+        if match:
+            lang_text = match.group(1).strip()
+            lang_list = re.split(r'[、和,，]', lang_text)
+            for lang in lang_list:
+                lang = lang.strip()
+                if lang:
+                    languages.append(lang)
 
     # 如果没有检测到语言，返回提示
     if not languages:
         assistant_msg = """请指定要翻译的目标语言。
 
 支持的语言：
-• 英语 (en)
-• 日语 (ja)
-• 韩语 (ko)
-• 法语 (fr)
-• 德语 (de)
-• 西班牙语 (es)
-• 俄语 (ru)
+• 英语、日语、韩语、法语、德语、西班牙语、俄语
+• 葡萄牙语、意大利语、阿拉伯语、泰语、越南语
+• 或输入任意其他语言名称
 
-例如："翻译成英语和日语" """
+例如："翻译成英语和日语" 或 "翻译成荷兰语" """
     else:
         # 开始翻译
         assistant_msg = f"""⏳ 开始翻译...
