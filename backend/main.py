@@ -1,0 +1,324 @@
+"""FastAPI 主入口"""
+import os
+import uuid
+from datetime import datetime
+from typing import List, Optional
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import pandas as pd
+import asyncio
+
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config import TEMP_DIR, RESULTS_DIR
+from services.csv_parser import parse_csv, detect_chinese_columns
+from services.storage import storage
+from agents.orchestrator import orchestrator
+
+app = FastAPI(
+    title="CSV 多语言翻译 Agent",
+    description="基于 Chat 对话的 CSV 多语言翻译服务",
+    version="1.0.0"
+)
+
+# CORS 配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 静态文件
+os.makedirs(RESULTS_DIR, exist_ok=True)
+app.mount("/results", StaticFiles(directory=RESULTS_DIR), name="results")
+
+
+# === 请求/响应模型 ===
+
+class StartTranslationRequest(BaseModel):
+    """开始翻译请求"""
+    task_id: str
+    columns_to_translate: List[str]
+    target_languages: List[str]
+
+class TaskStatusResponse(BaseModel):
+    """任务状态响应"""
+    task_id: str
+    status: str
+    total_rows: int
+    total_batches: int
+    completed_batches: int
+    progress_percent: float
+    current_batch: int
+    message: str
+    target_languages: List[str]
+    columns_to_translate: List[str]
+    started_at: str
+    completed_at: Optional[str] = None
+    errors: List[str] = []
+
+class ChatMessage(BaseModel):
+    """聊天消息"""
+    role: str  # user, assistant
+    content: str
+    timestamp: str = ""
+
+
+# === 存储对话历史 ===
+
+chat_histories = {}  # task_id -> List[ChatMessage]
+task_data = {}  # task_id -> DataFrame
+
+
+# === API 接口 ===
+
+@app.get("/")
+async def root():
+    """健康检查"""
+    return {"status": "ok", "message": "CSV 多语言翻译 Agent 服务运行中"}
+
+
+@app.post("/api/upload")
+async def upload_csv(file: UploadFile = File(...)):
+    """上传 CSV 文件"""
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="请上传 CSV 文件")
+
+    # 保存文件
+    task_id, filepath = storage.save_upload(await file.read(), file.filename)
+
+    # 解析 CSV
+    try:
+        df, stats = parse_csv(filepath)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"CSV 解析失败: {str(e)}")
+
+    # 存储数据
+    task_data[task_id] = df
+    chat_histories[task_id] = []
+
+    # 添加助手消息
+    assistant_msg = f"""📄 已收到文件 {file.filename}
+
+• 数据量：{stats['total_rows']} 条
+• 列数：{stats['total_columns']} 列
+• 检测到中文列：{', '.join(stats['chinese_columns']) if stats['chinese_columns'] else '未检测到'}
+
+请确认：
+1. 要翻译哪些列？
+2. 翻译成哪些语言？（支持：英语、日语、韩语、法语、德语、西班牙语、俄语）"""
+
+    chat_histories[task_id].append(ChatMessage(
+        role="assistant",
+        content=assistant_msg,
+        timestamp=datetime.now().isoformat()
+    ))
+
+    return {
+        "task_id": task_id,
+        "stats": stats,
+        "chat_history": [msg.dict() for msg in chat_histories[task_id]]
+    }
+
+
+@app.post("/api/chat")
+async def chat(message: str, task_id: str):
+    """处理对话消息"""
+    if task_id not in task_data:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 添加用户消息
+    chat_histories[task_id].append(ChatMessage(
+        role="user",
+        content=message,
+        timestamp=datetime.now().isoformat()
+    ))
+
+    df = task_data[task_id]
+    chinese_columns = detect_chinese_columns(df)
+
+    # 解析用户意图
+    user_input = message.lower()
+
+    # 检测目标语言
+    languages = []
+    if "英语" in user_input or "英文" in user_input or "en" in user_input:
+        languages.append("en")
+    if "日语" in user_input or "日文" in user_input or "ja" in user_input:
+        languages.append("ja")
+    if "韩语" in user_input or "韩文" in user_input or "ko" in user_input:
+        languages.append("ko")
+    if "法语" in user_input or "法文" in user_input or "fr" in user_input:
+        languages.append("fr")
+    if "德语" in user_input or "德文" in user_input or "de" in user_input:
+        languages.append("de")
+    if "西班牙语" in user_input or "es" in user_input:
+        languages.append("es")
+    if "俄语" in user_input or "俄文" in user_input or "ru" in user_input:
+        languages.append("ru")
+
+    # 如果没有检测到语言，返回提示
+    if not languages:
+        assistant_msg = """请指定要翻译的目标语言。
+
+支持的语言：
+• 英语 (en)
+• 日语 (ja)
+• 韩语 (ko)
+• 法语 (fr)
+• 德语 (de)
+• 西班牙语 (es)
+• 俄语 (ru)
+
+例如："翻译成英语和日语" """
+    else:
+        # 开始翻译
+        assistant_msg = f"""⏳ 开始翻译...
+
+• 翻译列：{', '.join(chinese_columns)}
+• 目标语言：{', '.join(languages)}
+• 数据量：{len(df)} 条
+
+正在处理中，请稍候..."""
+
+        chat_histories[task_id].append(ChatMessage(
+            role="assistant",
+            content=assistant_msg,
+            timestamp=datetime.now().isoformat()
+        ))
+
+        # 启动翻译任务（后台）
+        asyncio.create_task(
+            orchestrator.start_translation(
+                task_id=task_id,
+                df=df,
+                columns_to_translate=chinese_columns,
+                target_languages=languages,
+                progress_callback=lambda p: update_chat_progress(task_id, p)
+            )
+        )
+
+        return {
+            "task_id": task_id,
+            "chat_history": [msg.dict() for msg in chat_histories[task_id]],
+            "translation_started": True,
+            "target_languages": languages
+        }
+
+    # 添加助手消息
+    chat_histories[task_id].append(ChatMessage(
+        role="assistant",
+        content=assistant_msg,
+        timestamp=datetime.now().isoformat()
+    ))
+
+    return {
+        "task_id": task_id,
+        "chat_history": [msg.dict() for msg in chat_histories[task_id]],
+        "translation_started": False
+    }
+
+
+async def update_chat_progress(task_id: str, progress):
+    """更新翻译进度到对话"""
+    msg = f"⏳ 翻译进度：{progress.progress_percent:.1f}% ({progress.completed_batches}/{progress.total_batches} 批次)"
+
+    if progress.status == "completed":
+        msg = f"""✅ 翻译完成！
+
+• 处理数据：{progress.total_rows} 条
+• 批次数：{progress.total_batches}
+• 耗时：{calculate_duration(progress.started_at, progress.completed_at)}
+
+📊 预览结果：/result/{task_id}
+📥 下载 CSV：/download/{task_id}"""
+
+    chat_histories[task_id].append(ChatMessage(
+        role="assistant",
+        content=msg,
+        timestamp=datetime.now().isoformat()
+    ))
+
+
+def calculate_duration(start: str, end: str) -> str:
+    """计算耗时"""
+    try:
+        start_time = datetime.fromisoformat(start)
+        end_time = datetime.fromisoformat(end)
+        seconds = (end_time - start_time).total_seconds()
+        if seconds < 60:
+            return f"{int(seconds)} 秒"
+        return f"{int(seconds / 60)} 分 {int(seconds % 60)} 秒"
+    except:
+        return "未知"
+
+
+@app.get("/api/status/{task_id}")
+async def get_status(task_id: str):
+    """获取任务状态"""
+    progress = orchestrator.get_progress(task_id)
+    if not progress:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    return TaskStatusResponse(
+        task_id=progress.task_id,
+        status=progress.status,
+        total_rows=progress.total_rows,
+        total_batches=progress.total_batches,
+        completed_batches=progress.completed_batches,
+        progress_percent=progress.progress_percent,
+        current_batch=progress.current_batch,
+        message=progress.message,
+        target_languages=progress.target_languages,
+        columns_to_translate=progress.columns_to_translate,
+        started_at=progress.started_at,
+        completed_at=progress.completed_at,
+        errors=progress.errors
+    )
+
+
+@app.get("/api/chat/{task_id}")
+async def get_chat_history(task_id: str):
+    """获取对话历史"""
+    if task_id not in chat_histories:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    return {
+        "task_id": task_id,
+        "chat_history": [msg.dict() for msg in chat_histories[task_id]]
+    }
+
+
+@app.get("/download/{task_id}")
+async def download_result(task_id: str):
+    """下载翻译结果 CSV"""
+    csv_path = storage.get_result_csv_path(task_id)
+    if not csv_path:
+        raise HTTPException(status_code=404, detail="结果文件不存在")
+
+    return FileResponse(
+        path=csv_path,
+        filename=f"translated_{task_id}.csv",
+        media_type="text/csv"
+    )
+
+
+@app.get("/result/{task_id}", response_class=HTMLResponse)
+async def view_result(task_id: str):
+    """查看翻译结果预览"""
+    html_path = storage.get_result_html_path(task_id)
+    if not html_path:
+        return HTMLResponse(content="<h1>结果未就绪，请稍后再试</h1>", status_code=404)
+
+    with open(html_path, 'r', encoding='utf-8') as f:
+        return HTMLResponse(content=f.read())
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

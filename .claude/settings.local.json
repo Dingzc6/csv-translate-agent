@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(pkill -f \"react-scripts start\")",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(rm -rf frontend/.git backend/.git)",
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit -m \"Initial commit: CSV 多语言翻译 Agent:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "figma"
+  ]
+}
