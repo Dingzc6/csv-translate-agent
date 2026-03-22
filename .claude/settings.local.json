@@ -11,7 +11,9 @@
       "Bash(git remote:*)",
       "Bash(git branch:*)",
       "Bash(git push:*)",
-      "Bash(gh auth:*)"
+      "Bash(gh auth:*)",
+      "Bash(curl -s https://csv-translate-agent-production-86e7.up.railway.app/health)",
+      "Bash(curl -s https://csv-translate-agent-production-86e7.up.railway.app/)"
     ]
   },
   "enableAllProjectMcpServers": true,
